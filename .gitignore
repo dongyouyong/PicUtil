@@ -1,0 +1,40 @@
+# 临时文件和输出
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 测试图片和输出
+target.jpg
+target_*.pdf
+target_*.png
+test_*.png
+temp_*.png
+*.pdf
+output/
+PDF输出/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Jupyter
+.ipynb_checkpoints/
