@@ -17,7 +17,7 @@ from reportlab.lib.units import mm
 def split_image_to_pdf(input_path, output_pdf, num_columns=3, 
                        orientation='landscape', margin=10, overlap=50, column_gap=5):
     """
-    将长图分割并转换成多列 A4 PDF
+    将长图分割并转换成多列 A4 PDF - 零信息丢失版本（增强重叠算法）
     """
     try:
         # 打开图片
@@ -38,63 +38,117 @@ def split_image_to_pdf(input_path, output_pdf, num_columns=3,
         
         # 计算每列应包含的图片高度（像素）
         scale_for_width = column_width_pts / (img_width * 72 / 96)
-        column_height_px = int(available_height / scale_for_width / 72 * 96)
+        base_column_height_px = int(available_height / scale_for_width / 72 * 96)
         
-        # 计算总共需要多少列（考虑重叠）
-        total_segments = 0
-        current_pos = 0
-        while current_pos < img_height:
-            total_segments += 1
-            current_pos += column_height_px
-            if current_pos < img_height and overlap > 0:
-                current_pos -= overlap
+        # 计算实际需要的净列高（减去重叠）
+        net_column_height = base_column_height_px - overlap
+        
+        # 如果净高度太小，调整参数
+        if net_column_height <= 0:
+            print(f"  警告：重叠像素({overlap})过大，自动调整")
+            overlap = base_column_height_px // 3
+            net_column_height = base_column_height_px - overlap
+        
+        print(f"  分列参数: 列高{base_column_height_px}px, 重叠{overlap}px")
+        
+        # 重新设计重叠算法：第一列的最后N像素和第二列的开头N像素重合
+        segments = []
+        current_y = 0
+        segment_index = 0
+        
+        while current_y < img_height:
+            # 计算当前段的结束位置
+            segment_end = min(current_y + base_column_height_px, img_height)
+            
+            # 裁剪图片段
+            img_segment = img.crop((0, current_y, img_width, segment_end))
+            
+            # 添加段信息
+            segments.append({
+                'image': img_segment,
+                'start_y': current_y,
+                'end_y': segment_end,
+                'height': segment_end - current_y
+            })
+            
+            print(f"    段{segment_index + 1}: Y={current_y}-{segment_end} (高度{segment_end - current_y}px)")
+            
+            # 如果已经到达图片末尾，结束
+            if segment_end >= img_height:
+                break
+            
+            # 计算下一段的开始位置：当前段结束位置向前回退重叠像素
+            # 这样确保第一列的最后overlap像素和第二列的开头overlap像素重合
+            next_start = segment_end - overlap
+            
+            # 防止下一段开始位置不合理
+            if next_start <= current_y:
+                # 如果重叠太大导致下一段开始位置不合理，调整
+                next_start = current_y + (base_column_height_px - overlap)
+                if next_start >= img_height:
+                    break
+            
+            current_y = next_start
+            segment_index += 1
+            
+            # 防止无限循环
+            if segment_index > 50:  # 降低安全限制
+                print("  警告：分段数量过多，停止分段")
+                break
+        
+        # 验证重叠性（新的重叠逻辑）
+        overlap_check_passed = True
+        overlap_details = []
+        
+        if len(segments) > 1:
+            for i in range(1, len(segments)):
+                prev_end = segments[i-1]['end_y'] 
+                curr_start = segments[i]['start_y']
+                actual_overlap = prev_end - curr_start
+                overlap_details.append(f"段{i}-{i+1}: 重叠{actual_overlap}px")
+                
+                if actual_overlap < overlap:
+                    print(f"  警告：段{i}与段{i+1}间重叠不足({actual_overlap}px < {overlap}px)")
+                    overlap_check_passed = False
+        
+        # 检查完整覆盖
+        coverage_check = segments[-1]['end_y'] >= img_height if segments else False
+        if not coverage_check:
+            print(f"  调整最后一段以完整覆盖图片")
+            if segments:
+                # 重新裁剪最后一段
+                last_start = segments[-1]['start_y']
+                segments[-1] = {
+                    'image': img.crop((0, last_start, img_width, img_height)),
+                    'start_y': last_start,
+                    'end_y': img_height,
+                    'height': img_height - last_start
+                }
         
         # 计算页数
-        total_pages = (total_segments + num_columns - 1) // num_columns
+        total_pages = (len(segments) + num_columns - 1) // num_columns
         
-        print(f"  分成: {total_segments} 列，{total_pages} 页")
+        coverage_range = f"0-{segments[-1]['end_y']}px" if segments else "0-0px"
+        overlap_status = "✓" if overlap_check_passed else "⚠"
+        print(f"  分成: {len(segments)}段, {total_pages}页, 覆盖:{coverage_range} {overlap_status}")
         
         # 创建PDF
         c = canvas.Canvas(str(output_pdf), pagesize=page_size)
         
-        # 分割图片并添加到PDF
-        segments = []
-        current_y = 0
-        
-        # 先生成所有列段
-        while current_y < img_height:
-            start_y = current_y
-            end_y = min(current_y + column_height_px, img_height)
-            
-            # 裁剪列段
-            segment = img.crop((0, start_y, img_width, end_y))
-            segments.append({
-                'image': segment,
-                'start_y': start_y,
-                'end_y': end_y
-            })
-            
-            # 移动到下一段（考虑重叠）
-            current_y = end_y
-            if current_y < img_height and overlap > 0:
-                current_y -= overlap
-        
         # 按页面排列列段
-        page_num = 1
         for page_start in range(0, len(segments), num_columns):
             page_segments = segments[page_start:page_start + num_columns]
             
             for col_idx, seg_info in enumerate(page_segments):
                 segment = seg_info['image']
                 
-                # 保存临时图片（使用全局索引避免重名）
+                # 保存临时图片
                 global_idx = page_start + col_idx
                 temp_path = output_pdf.parent / f"temp_seg_{global_idx}.png"
                 segment.save(temp_path, dpi=(96, 96))
                 
                 # 计算在PDF中的位置
                 x_pos = margin * mm + col_idx * (column_width_pts + column_gap * mm)
-                y_pos = page_height - margin * mm
                 
                 # 计算显示尺寸（保持宽高比，适应列宽）
                 display_width = column_width_pts
@@ -105,7 +159,8 @@ def split_image_to_pdf(input_path, output_pdf, num_columns=3,
                     display_height = available_height
                     display_width = (img_width / segment.height) * display_height
                 
-                y_pos = y_pos - display_height
+                # Y位置：从页面顶部开始
+                y_pos = page_height - margin * mm - display_height
                 
                 # 绘制图片
                 c.drawImage(str(temp_path), x_pos, y_pos, 
@@ -113,21 +168,24 @@ def split_image_to_pdf(input_path, output_pdf, num_columns=3,
                            preserveAspectRatio=True)
                 
                 # 删除临时文件
-                temp_path.unlink()
+                temp_path.unlink(missing_ok=True)
             
             # 如果还有更多段，添加新页
             if page_start + num_columns < len(segments):
                 c.showPage()
-                page_num += 1
         
         # 保存PDF
         c.save()
         
-        print(f"  ✅ 成功生成: {output_pdf.name}")
+        # 最终状态
+        final_status = "零信息丢失" if (overlap_check_passed and coverage_check) else "增强覆盖"
+        print(f"  ✅ 成功生成: {output_pdf.name} ({final_status})")
         return True
         
     except Exception as e:
         print(f"  ❌ 错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
